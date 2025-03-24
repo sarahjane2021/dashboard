@@ -1,25 +1,28 @@
-version: '3.8'
-
+version: '3'
 services:
   postgres:
-    image: postgres:13
+    image: postgres:latest
+    container_name: postgres_container
+    restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 123
-      POSTGRES_DB: project
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: orion
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  streamlit:
-    build: .
+  trino:
+    image: trinodb/trino:latest
+    container_name: trino_container
+    restart: always
     ports:
-      - "8501:8501"
-    environment:
-      DATABASE_URL: "postgresql://postgres:123@host.docker.internal:5432/project"
+      - "8080:8080"
     depends_on:
       - postgres
+    volumes:
+      - ./trino-config:/etc/trino
 
 volumes:
   postgres_data:

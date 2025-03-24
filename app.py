@@ -1,21 +1,11 @@
-import streamlit as st
+import trino
 import pandas as pd
-from sqlalchemy.exc import SQLAlchemyError
-import os
-from streamlit_option_menu import option_menu
-import datetime
 import streamlit as st
-import pandas as pd
-from io import StringIO
-from sqlalchemy import create_engine, text
-import plotly.express as px
-import plost
 import psycopg2
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sqlalchemy.orm import sessionmaker
-import datetime
-
+from io import StringIO
+import plotly.express as px
+from streamlit_option_menu import option_menu
+import json
 ####################################
 st.set_page_config(layout='wide', page_title="Employee Insights Dashboard")
 ####################################
@@ -25,14 +15,6 @@ def local_css(file_name):
         st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
 
 local_css("style.css") 
-
-####################################
-# Set your database URI (consider using environment variables for sensitive data)
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:123@localhost:5432/project")
-engine = create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
-session = Session()
-
 ####################################
 # Sidebar for navigation
 ####################################
@@ -46,536 +28,328 @@ with st.sidebar:
     )
 
 ####################################
-# Main content   
- ###################################
-# ---------------------------------
-# Fetch Total Number of Employees
-# ---------------------------------
-employees_query = "SELECT COUNT(*) AS num_employees FROM employees"
-num_employees = pd.read_sql(employees_query, engine).iloc[0]['num_employees']
-# ---------------------------------
-# Get the Latest Attendance Date
-# ---------------------------------
-latest_date_query = "SELECT MAX(Date) AS latest_date FROM attendance"
-latest_date_result = pd.read_sql(latest_date_query, engine)
-latest_date = latest_date_result.iloc[0]['latest_date']
 
-# Ensure we have a valid latest_date and format it nicely
-if pd.notnull(latest_date):
-    latest_date_str = pd.to_datetime(latest_date).strftime('%B %d, %Y')
-    # ---------------------------------
-    # Fetch Present Count on Latest Date (assuming present means onLeave = FALSE)
-    # ---------------------------------
-    present_query = f"""
-        SELECT COUNT(*) AS num_present
-        FROM attendance
-        WHERE date = '{latest_date}' AND onleave = FALSE
-    """
-    num_present = pd.read_sql(present_query, engine).iloc[0]['num_present']
-    # ---------------------------------
-    # Fetch On-Leave Count on Latest Date
-    # ---------------------------------
-    on_leave_query = f"""
-        SELECT COUNT(*) AS num_on_leave
-        FROM attendance
-        WHERE date = '{latest_date}' AND onleave = TRUE
-    """
-    num_on_leave = pd.read_sql(on_leave_query, engine).iloc[0]['num_on_leave']
-else:
-    latest_date_str = "N/A"
-    num_present = 0
-    num_on_leave = 0
+# Function to establish connection with Trino
+def get_trino_connection():
+    return trino.dbapi.connect(
+        host="localhost",
+        port=8080,
+        user="admin",
+        catalog="postgresql",  # Trino catalog
+        schema="public"        # Change schema if needed
+    )
 
-# ---------------------------------
-# Display Metrics in a 3-Column Layout
-# ---------------------------------
-st.markdown('### Metrics')
-col1, col2, col3 = st.columns(3)
 
-st.markdown('### Metrics')
+# connection with PostgreSQL FOR INSERTING DATA
+def get_postgres_connection():
+    return psycopg2.connect(
+        dbname="orion",
+        user="admin",
+        password="password",
+        host="209.38.56.184",
+        port="5432"
+    )
 
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    with st.container(border=True):
-        st.markdown(f'''
-        <div class="card">
-          <div class="metric-title" style="font-weight: bold; font-size: 1.2rem;">Total Number of Employees</div>
-          <div class="metric-value" style="font-size: 2rem;">{num_employees}</div>
-        </div>
-        ''', unsafe_allow_html=True)
-
-with col2:
-    with st.container(border=True):
-        st.markdown(f'''
-        <div class="card">
-          <div class="metric-title" style="font-weight: bold; font-size: 1.2rem;">Present ({latest_date_str})</div>
-          <div class="metric-value" style="font-size: 2rem;">{num_present}</div>
-        </div>
-        ''', unsafe_allow_html=True)
-
-with col3:
-    with st.container(border=True):
-        st.markdown(f'''
-        <div class="card">
-          <div class="metric-title" style="font-weight: bold; font-size: 1.2rem;">On-Leave ({latest_date_str})</div>
-          <div class="metric-value" style="font-size: 2rem;">{num_on_leave}</div>
-        </div>
-        ''', unsafe_allow_html=True)
-
-########################################################
-# Function to fetch attendance data
-########################################################
-def fetch_data():
+# Function to fetch data from Trino
+def fetch_data(query):
     try:
-        query = """
-        SELECT 
-            A.attendance_id, 
-            A.employee_id,
-            E.fname, 
-            E.lname, 
-            A.organization, 
-            A.work_setup, 
-            A.onleave, 
-            A.durationstart, 
-            A.durationend, 
-            A.leave_type, 
-            A.timein, 
-            A.timeout, 
-            A.date, 
-            A.location
-        FROM Attendance A
-        JOIN Employees E ON A.employee_id = E.employee_id
-        ORDER BY A.date DESC;
-        """
-        df = pd.read_sql(query, con=engine)
-        return df
+        conn = get_trino_connection()
+        cur = conn.cursor()
+        cur.execute(query)
+        rows = cur.fetchall()
+        columns = [desc[0] for desc in cur.description]
+        return pd.DataFrame(rows, columns=columns)
     except Exception as e:
         st.error(f"Error fetching data: {e}")
         return pd.DataFrame()
 
-st.markdown("### Attendance Records")
+############################################################
+df = fetch_data("SELECT * FROM postgresql.public.attendance_view")
+############################################################
+st.markdown("#### Employee Attendance Dashboard")
 
-# Fetch attendance data
-attendance_data = fetch_data()
+# get the latest date
+latest_date = df["date_today"].max()  
+latest_data = df[df["date_today"] == latest_date] 
 
-if not attendance_data.empty:
-    # Create a combined employee name column (keep employee_id for merging)
-    attendance_data['employee_name'] = attendance_data['fname'] + ' ' + attendance_data['lname']
-    
-    # Drop unwanted columns (but keep employee_id)
-    attendance_data = attendance_data.drop(columns=['attendance_id', 'fname', 'lname'])
-    
-    # Convert date and time-related columns to datetime objects
-    attendance_data['durationstart'] = pd.to_datetime(attendance_data['durationstart'], errors='coerce')
-    attendance_data['durationend']   = pd.to_datetime(attendance_data['durationend'], errors='coerce')
-    attendance_data['date']          = pd.to_datetime(attendance_data['date'], errors='coerce')
-    attendance_data['timein']        = pd.to_datetime(attendance_data['timein'], format='%H:%M:%S', errors='coerce')
-    attendance_data['timeout']       = pd.to_datetime(attendance_data['timeout'], format='%H:%M:%S', errors='coerce')
-    
-    # Use a date picker with default as the latest attendance date
-    selected_date = st.date_input("Filter by Date", value=attendance_data['date'].max().date())
-    
-    # Filter attendance records for the selected date
-    present_data = attendance_data[attendance_data['date'].dt.date == selected_date].copy()
-    
-    # Compute the "Note" for present records
-    def compute_note(row):
-        # If onLeave is True and the leave period covers the selected date, mark as "OnLeave"
-        if row['onleave'] and pd.notnull(row['durationstart']) and pd.notnull(row['durationend']):
-            if row['durationstart'].date() <= selected_date <= row['durationend'].date():
-                return "OnLeave"
-        # Otherwise, check timein
-        if pd.isna(row['timein']):
-            return "Late"
-        elif row['timein'].time() <= datetime.time(8, 0):
-            return "On-time"
-        else:
-            return "Late"
-    
-    present_data['Note'] = present_data.apply(compute_note, axis=1)
-    
-    # Format columns for present records
-    present_data['durationstart'] = present_data['durationstart'].dt.strftime('%B %d, %Y %I:%M %p')
-    present_data['durationend']   = present_data['durationend'].dt.strftime('%B %d, %Y %I:%M %p')
-    present_data['timein']        = present_data['timein'].dt.strftime('%I:%M %p')
-    present_data['timeout']       = present_data['timeout'].dt.strftime('%I:%M %p')
-    present_data['date']          = present_data['date'].dt.strftime('%B %d, %Y')
-    
-    # -----------------------------------
-    # Identify Absent Employees
-    # -----------------------------------
-    # Fetch all employees from the Employees table
-    employee_query = "SELECT employee_id, fname, lname, (fname || ' ' || lname) AS employee_name FROM Employees"
-    employee_data = pd.read_sql(employee_query, engine)
-    
-    # Identify employees with no attendance record for the selected date
-    present_ids = set(present_data['employee_id'])
-    absent_employees = employee_data[~employee_data['employee_id'].isin(present_ids)].copy()
-    
-    # Create a DataFrame for absent employees with columns matching the final output
-    absent_data = pd.DataFrame({
-         'employee_id': absent_employees['employee_id'],
-         'employee_name': absent_employees['employee_name'],
-         'organization': "", 
-         'work_setup': "",
-         'onleave': False,
-         'leave_type': "",
-         'durationstart': "",
-         'durationend': "",
-         'timein': "",
-         'timeout': "",
-         'date': selected_date.strftime('%B %d, %Y'),
-         'location': "",
-         'Note': "Absent"
-    })
-    
-    # Combine present and absent data
-    combined_data = pd.concat([present_data, absent_data], ignore_index=True)
-    
-    # Reorder columns as desired
-    cols = ['employee_name', 'organization', 'work_setup', 'date', 'timein', 'timeout', 'Note', 'onleave', 'leave_type',
-            'durationstart', 'durationend', 'location']
-    combined_data = combined_data[cols]
-    
-    # Optional: Sort by employee name
-    # Rename columns for display
-    combined_data = combined_data.rename(columns={
-        'employee_name': 'Employee Name',
-        'organization': 'Organization',
-        'work_setup': 'Work Setup',
-        'onleave': 'On-leave',
-        'leave_type': 'Leave Type',
-        'durationstart': 'Start',
-        'durationend': 'End',
-        'timein': 'Time-in',
-        'timeout': 'Time-out',
-        'date': 'Date',
-        'location': 'Location'
-        })
+# Attendance Status Summary
+st.markdown("📌 Attendance Status")
+col1, col2, col3 = st.columns(3)
 
-    st.dataframe(combined_data.set_index('Employee Name'))
-else:
-    st.warning("No attendance records found.")
+metric_cards = [
+    ("✅ Approved", latest_data["approved_attendance"].sum()),
+    ("❌ Rejected", latest_data["rejected_attendance"].sum()),
+    ("🕒 Pending", latest_data["pending_attendance"].sum()),
+]
+for col, (title, value) in zip([col1, col2, col3], metric_cards):
+    col.markdown(f"""
+        <div class='card'>
+            <div class='metric-title'>{title}</div>
+            <div class='metric-value'>{value}</div>
+        </div>
+    """, unsafe_allow_html=True)
 
-
-#########################################
-# Process attendance_data for a detailed line chart
-#########################################
-
-# Convert 'date' column to datetime for proper grouping
-attendance_data['date'] = pd.to_datetime(attendance_data['date'], errors='coerce')
-
-# Define a function to classify attendance
-def classify_attendance(row):
-    # If employee is on leave, classify as On-Leave and pass leave details
-    if row['onleave']:
-        return 'On-Leave', row['leave_type'], row['durationstart'], row['durationend']
-    # If timein is missing (and not on leave), classify as Absent
-    if pd.isna(row['timein']):
-        return 'Absent', None, None, None
-    # Attempt to parse timein (assumed format 'HH:MM:SS')
-    try:
-        timein_dt = pd.to_datetime(row['timein'], format='%H:%M:%S', errors='coerce')
-        if pd.isna(timein_dt):
-            return 'Unknown', None, None, None
-        timein = timein_dt.time()
-    except Exception as e:
-        st.warning(f"Error converting timein: {e}")
-        return 'Unknown', None, None, None
-    # Check if employee is Late (arriving at or after 8:00 AM)
-    cutoff = datetime.time(8, 0, 0)
-    if timein >= cutoff:
-        return 'Late', None, None, None
-    # Otherwise, the employee is Present
-    return 'Present', None, None, None
-
-# Apply classification function to each row, creating new columns
-attendance_data[['Status', 'Leave Type', 'Leave Start', 'Leave End']] = attendance_data.apply(
-    lambda row: pd.Series(classify_attendance(row)), axis=1
-)
-
-# -----------------------------
-# Aggregation for Union (Present includes Late)
-# -----------------------------
-# Create a new column 'Attendance' that groups both "Present" and "Late" as "Present"
-attendance_data['Attendance'] = attendance_data['Status'].apply(
-    lambda x: 'Present' if x in ['Present', 'Late'] else x
-)
-
-# Aggregate daily counts based on the union grouping
-attendance_union = attendance_data.groupby(['date', 'Attendance']).size().reset_index(name='Count')
-total_counts = attendance_data.groupby('date').size().reset_index(name='Total Employees')
-attendance_union = pd.merge(attendance_union, total_counts, on='date')
-attendance_union['Percentage'] = (attendance_union['Count'] / attendance_union['Total Employees']) * 100
-
-# Pivot table for union data – we'll have "Present" (union) and "On-Leave"
-union_pivot = attendance_union.pivot_table(
-    index='date', columns='Attendance', values='Percentage', aggfunc='sum'
-).reset_index()
-# Ensure both keys exist
-for key in ['Present', 'On-Leave']:
-    if key not in union_pivot.columns:
-        union_pivot[key] = 0
-
-# -----------------------------
-# Aggregation for Late only
-# -----------------------------
-late_data = attendance_data[attendance_data['Status'] == 'Late']
-late_counts = late_data.groupby('date').size().reset_index(name='Late_Count')
-late_counts = pd.merge(late_counts, total_counts, on='date')
-late_counts['Late_Percentage'] = (late_counts['Late_Count'] / late_counts['Total Employees']) * 100
-
-# -----------------------------
-# Merge union and late data
-# -----------------------------
-status_pivot = pd.merge(union_pivot, late_counts[['date', 'Late_Percentage']], on='date', how='left')
-status_pivot['Late_Percentage'] = status_pivot['Late_Percentage'].fillna(0)
-
-# Rename for clarity
-status_pivot = status_pivot.rename(columns={'Late_Percentage': 'Late'})
-
-# Ensure our pivot table has the desired columns and fill missing with 0
-expected_statuses = ['Present', 'Late', 'On-Leave']
-status_pivot = status_pivot[['date'] + expected_statuses]
-for col in expected_statuses:
-    status_pivot[col] = status_pivot[col].fillna(0)
-
-####################################################################################
-# ROW 3 
-####################################################################################
-# Create the line chart using Plotly Express
-# -----------------------------
-fig_line = px.line(
-    status_pivot, 
-    x='date', 
-    y=expected_statuses, 
-    title='Daily Attendance Summary',
-    labels={'value': 'Percentage', 'date': 'Date'},
-    markers=True
-)
-fig_line.update_layout(
-    xaxis=dict(tickformat="%B %d, %Y")
-)
-
-# Customize the hover information for each trace
-for trace in fig_line.data:
-    if trace.name == 'Present':
-        trace.hovertemplate = (
-            'Date: %{x|%B %d, %Y}<br>'
-            'Present (incl. Late): %{y:.2f}%<br>'
-            '<extra></extra>'
-        )
-    elif trace.name == 'Late':
-        trace.hovertemplate = (
-            'Date: %{x|%B %d, %Y}<br>'
-            'Late: %{y:.2f}%<br>'
-            '<extra></extra>'
-        )
-    elif trace.name == 'On-Leave':
-        trace.hovertemplate = (
-            'Date: %{x|%B %d, %Y}<br>'
-            'On-Leave: %{y:.2f}%<br>'
-            '<extra></extra>'
-        )
-
-st.plotly_chart(fig_line)
-########################################################
-# Load task data for bar chart
-########################################################
-def load_task_data():
-    query = "SELECT state, COUNT(*) as count FROM Story_points GROUP BY state ORDER BY count DESC"
-    return pd.read_sql(query, engine)
-
-task_data = load_task_data()
-
-#-------------------------------------------------------
-# Load leave data for the current week for pie chart
-#-------------------------------------------------------
-query_leave = """
-SELECT leave_type, COUNT(*) as count FROM Attendance 
-WHERE leave_type IS NOT NULL GROUP BY leave_type;
+#---------------------
+query = """
+SELECT 
+    a.full_name, a.organization_name, a.date_today, a.time_in, a.time_out, 
+    a.status, a.type,
+    CASE WHEN l.leave_id IS NOT NULL THEN 'On Leave' ELSE 'At Work' END AS leave_status
+FROM postgresql.public.attendance_view a
+LEFT JOIN postgresql.public.silver_leave l 
+    ON a.emp_id = l.emp_id AND a.date_today BETWEEN l.duration_start_date AND l.duration_end_date
+ORDER BY a.date_today DESC
 """
-leave_data = pd.read_sql(query_leave, engine)
+df = fetch_data(query)
 
-# Create two columns
+# Format date and time columns
+df["date_today"] = pd.to_datetime(df["date_today"]).dt.strftime("%b %d, %Y")
+df["time_in"] = df["time_in"].apply(lambda x: x.strftime("%I:%M %p") if pd.notnull(x) else "N/A")
+df["time_out"] = df["time_out"].apply(lambda x: x.strftime("%I:%M %p") if pd.notnull(x) else "N/A")
+
+# Get most recent date
+latest_date = df["date_today"].max()
+latest_df = df[df["date_today"] == latest_date]
+
+# Date inputs and filtering
+default_date = pd.to_datetime(df["date_today"]).max() if not df["date_today"].isnull().all() else pd.Timestamp("today").date()
+start_date, end_date = st.columns(2)
+start_date = start_date.date_input("Start Date", value=default_date)
+end_date = end_date.date_input("End Date", value=default_date)
+filtered_df = df[(pd.to_datetime(df["date_today"]) >= pd.to_datetime(start_date)) & (pd.to_datetime(df["date_today"]) <= pd.to_datetime(end_date))]
+
+filtered_df = filtered_df.rename(columns={
+    "full_name": "Name",
+    "organization_name": "Organization",
+    "date_today": "Date",
+    "time_in": "Time In",
+    "time_out": "Time Out",
+    "status": "Status",
+    "type": "Work Type",
+    "leave_status": "Leave Status"
+})
+
+st.dataframe(
+    filtered_df[["Name", "Organization", "Date", "Time In", "Time Out", "Status", "Work Type", "Leave Status"]],
+    use_container_width=True  
+)
+#--------------------
+# Count metrics, # employees, on leave, at work
+total_employees = latest_df.shape[0]
+on_leave_count = latest_df[latest_df["leave_status"] == "On Leave"].shape[0]
+not_on_leave_count = total_employees - on_leave_count 
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.divider() 
+    col1.markdown(f"""
+        <div class='card'>
+            <div class='metric-title'>Total Employees</div>
+            <div class='metric-value'>{total_employees}</div>
+        </div>
+        <div class='card'>
+            <div class='metric-title'>On Leave</div>
+            <div class='metric-value'>{on_leave_count}</div>
+        </div>
+        <div class='card'>
+            <div class='metric-title'>At Work</div>
+            <div class='metric-value'>{not_on_leave_count}</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+#########################################################
+df = fetch_data("SELECT * FROM postgresql.public.leave_visualizations")
+#########################################################
+color_map = {
+    "Maternity Leave": "#98FB98",       
+    "Paternity Leave": "#fa61ab", 
+    "Sick Leave": "#1282be",        
+    "Vacation Leave": "#708090",  
+    "Special Leave for Women": "#87CEEB"
+}
+#---------------------
+## Approved Leave Types (Bar Chart)**
+with col2:
+    fig2 = px.bar(
+        df,
+        x="leave_month",
+        y="approved_leave_count",
+        color="type",
+        title="Approved Leave Types Per Month",
+        labels={"leave_month": "Month", "approved_leave_count": "Approved Leave Count", "type": "Leave Type"},
+        barmode="stack",
+        color_discrete_map=color_map 
+    ).update_layout(
+        legend=dict(orientation="h", x=0.1, xanchor="center", y=-0.2) 
+    )
+
+    st.plotly_chart(fig2, use_container_width=True, theme='streamlit')
+#---------------------
+## Most Common Leave Types (Bar Chart)**
+leave_type_summary = df.groupby("type", as_index=False)["leave_type_count"].sum()
+with col3:
+    fig_type = px.bar(
+        leave_type_summary, 
+        x="type",  # Switch x and y
+        y="leave_type_count",  # Switch x and y
+        title="Most Common Leave Types",
+        color="type",
+        labels={"type": "Leave Type", "leave_type_count": "Leave Count"},
+        orientation='h',
+        color_discrete_map=color_map 
+    ).update_layout(
+        legend=dict(orientation="h", x=0.1, xanchor="center", y=-0.2),
+        xaxis=dict(showticklabels=False)
+    )
+    st.plotly_chart(fig_type, use_container_width=True)
+
+#---------------------
 col1, col2 = st.columns(2)
 
+# Leave Trends (Line Chart)
 with col1:
-    st.markdown("### Task Status Breakdown")
-    fig_bar = px.bar(task_data, x='state', y='count',
-                     labels={'state': 'Task State', 'count': 'Number of Tasks'},
-                     height=400)
-    st.plotly_chart(fig_bar, use_container_width=True)
+    if not df.empty:
+        df["leave_month"] = pd.to_datetime(df["leave_month"])
 
+    leave_trends = df.groupby("leave_month", as_index=False)[
+        ["approved_leave_count", "rejected_count", "pending_status_count"]
+    ].sum()
+
+    leave_trends["leave_month"] = leave_trends["leave_month"].dt.strftime("%b %Y")
+    fig1 = px.line(
+        leave_trends,
+        x="leave_month",
+        y=["approved_leave_count", "rejected_count", "pending_status_count"],
+        markers=True,
+        title="Leave Trends (Line Chart)",
+        labels={"leave_month": "Month", "value": "Leave Count", "variable": "Leave Type"}
+    ).update_layout(
+        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.2)
+    )
+    st.plotly_chart(fig1, use_container_width=False)
+#---------------------
+# Donut chart for Leave Approval vs. Rejection Rate
 with col2:
-    st.markdown("### Leave Breakdown")
-    if leave_data.empty:
-        st.info("No leave records for the current week.")
-    else:
-        # Create the pie chart
-        fig_pie = px.pie(leave_data, names='leave_type', values='count')
+    fig_donut = px.pie(
+        pd.DataFrame({
+            "status": ["Approved", "Rejected"],
+            "count": [df["approved_count"].sum(), df["rejected_count"].sum()]
+        }),
+        values="count",
+        names="status",
+        title="Leave Approval vs. Rejection Rate",
+        hole=0.4
+    ).update_traces(
+        textinfo="percent+label",
+        texttemplate="<span style='font-size:18px'><b>%{percent:.0%}</b></span><br><span style='font-size:14px'>%{label}</span>", 
+        textfont=dict(color="black"), 
+        hoverinfo="label+percent+value"  
+    ).update_layout(
+        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.2),  
+        title=dict(x=0.2)  
+    )
+    st.plotly_chart(fig_donut, use_container_width=True)
+######################
+df = fetch_data("SELECT * FROM postgresql.public.task_insights_view")
+#######################
 
-        # Update layout to adjust size and position the legend below the chart
-        fig_pie.update_layout(
-            legend=dict(
-                orientation="h",  # Horizontal legend
-                yanchor="bottom",
-                y=-0.3,  #move the legend up or down
-                xanchor="center",
-                x=0.5  # Center the legend
-            ),
-            height=400,  # Adjust the height
-            width=500    # Adjust the width
-        )
+delayed_df = df[df["overdue_status"].isin(["Late", "Overdue", "Severely Overdue"])].groupby(["label", "overdue_status"]).size().reset_index(name="count")
+fig = px.scatter(
+    delayed_df, x="label", y="count", size="count", color="overdue_status",
+    color_discrete_map={"Late": "pink", "Overdue": "orange", "Severely Overdue": "red"},
+    title="Missed Deadlines & Delays Severity", labels={"label": "Team", "count": "Number of Delayed Tasks"},
+    template="plotly_white"
+)
 
-        # Display the pie chart in Streamlit
-        st.plotly_chart(fig_pie, use_container_width=True)
+st.plotly_chart(fig)
+#--------------------------------
+col1, col2 = st.columns(2)
+with col1:
+    st.divider() 
+    delay_counts = df[df["overdue_status"] != "On Time"].groupby(["label", "overdue_status"]).size().reset_index(name="count")
 
-########################################################
-# -------------------------------
-# 🔹 Database Connection
-# -------------------------------
-st.subheader("Import Data")
-uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
+    # Plot Stacked Bar Chart
+    fig = px.bar(
+        delay_counts,
+        x="label",
+        y="count",
+        color="overdue_status",
+        title="Breakdown of Overdue Tasks by Team",
+        labels={"count": "Number of Delayed Tasks", "label": "Team"},
+        color_discrete_map={"Late": "pink", "Overdue": "orange", "Severely Overdue": "red"},
+        template="plotly_white",
+        barmode="stack")
 
-if uploaded_file is not None:
-    # Read the uploaded CSV file
-    stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
-    new_data = pd.read_csv(stringio)
+    st.plotly_chart(fig)
+#--------------------------------
+with col2:
+    options = {
+    "state": "State",
+    "priority": "Priority",
+    "label": "Label",
+    "estimate": "Estimate",
+    "overdue_status": "Task Status"
+}
 
-    # Display uploaded data
-    st.write("📌 **Preview of uploaded data:**")
-    st.dataframe(new_data)
 
-    # -------------------------------------------
-    # 1️⃣ Attendance Table Import - highest priority
-    #    Check for attendance-specific columns.
-    # -------------------------------------------
-    if all(col in new_data.columns for col in ["employee_id", "date", "organization", "work_setup"]):
-        if st.button("Import Attendance to Database"):
-            try:
-                # Check if Attendance table exists
-                check_table_query = (
-                    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name='attendance');"
+    st.markdown('<div class="custom-selectbox">', unsafe_allow_html=True)
+    x_axis_option = st.selectbox("X-Axis:", options.keys())
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # count selected X-axis
+    df_count = df[x_axis_option].value_counts().reset_index()
+    df_count.columns = [x_axis_option, "issue_count"]
+
+    fig = px.bar(
+        df_count,
+        x=x_axis_option,
+        y="issue_count",
+        labels={"issue_count": "Issue Count", x_axis_option: x_axis_option.capitalize()},
+        template="plotly_white"
+    )
+    fig.update_traces(width=0.5) 
+    st.plotly_chart(fig)
+
+#######################
+
+st.markdown("#### CSV Import to Story Points Table")
+
+uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+
+if uploaded_file:
+    # Read CSV with proper separator
+    df = pd.read_csv(uploaded_file, sep=',')
+
+    # Ensure JSON columns exist before applying transformations
+    json_columns = ["relates_to", "sub_issue", "blocked_by"]
+    for col in json_columns:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: json.loads(x.replace('""', '"')) if pd.notna(x) else None)
+        else:
+            df[col] = None  # Fill missing columns with None
+
+    st.write("### Preview of Uploaded Data:")
+    st.dataframe(df)
+
+    if st.button("Import Data"):
+        conn = get_trino_connection()
+        cur = conn.cursor()
+
+        for _, row in df.iterrows():
+            query = f"""
+                INSERT INTO story_points (
+                    issue_id, emp_id, task, state, priority, start_date, due_date, estimate, labels, task_ended, relates_to, sub_issue, blocked_by, module, cycle
+                ) VALUES (
+                    '{row['issue_id']}', {row['emp_id']}, '{row['task']}', '{row['state']}', '{row['priority']}',
+                    DATE '{row['start_date']}', DATE '{row['due_date']}', {row['estimate']}, '{row['labels']}',
+                    {f"DATE '{row['task_ended']}'" if pd.notna(row['task_ended']) else 'NULL'},
+                    {f"CAST('{json.dumps(row['relates_to'])}' AS JSON)" if row['relates_to'] else 'NULL'},
+                    {f"CAST('{json.dumps(row['sub_issue'])}' AS JSON)" if row['sub_issue'] else 'NULL'},
+                    {f"CAST('{json.dumps(row['blocked_by'])}' AS JSON)" if row['blocked_by'] else 'NULL'},
+                    '{row['module']}', '{row['cycle']}'
                 )
-                table_exists = session.execute(text(check_table_query)).scalar()
+            """
+            cur.execute(query)
 
-                if not table_exists:
-                    st.error("⚠️ Error: 'attendance' table does not exist in the database.")
-                else:
-                    # Get existing attendance records to ensure one record per employee per day
-                    existing_attendance = pd.read_sql(
-                        "SELECT employee_id, date FROM attendance;", con=engine
-                    )
-
-                    # Merge to filter out duplicates (i.e., same employee_id and date)
-                    new_attendance = new_data.merge(
-                        existing_attendance, on=["employee_id", "date"], how="left", indicator=True
-                    )
-                    new_attendance = new_attendance[new_attendance["_merge"] == "left_only"].drop(
-                        columns=["_merge"]
-                    )
-
-                    if not new_attendance.empty:
-                        new_attendance.to_sql(
-                            "attendance", con=engine, if_exists="append", index=False, method="multi"
-                        )
-                        session.commit()
-                        st.success("✅ Attendance data imported successfully!")
-                    else:
-                        st.warning("⚠️ Data Already Exist.")
-            except Exception as e:
-                session.rollback()
-                st.error(f"❌ Error importing attendance data: {e}")
-
-    # -------------------------------------------
-    # 2️⃣ Story Points Table Import
-    #    Check for employee_id and task columns.
-    # -------------------------------------------
-    elif all(col in new_data.columns for col in ["employee_id", "task"]) and "organization" not in new_data.columns:
-        if st.button("Import Story Points to Database"):
-            try:
-                # Check if Story Points table exists
-                check_table_query = (
-                    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name='story_points');"
-                )
-                table_exists = session.execute(text(check_table_query)).scalar()
-
-                if not table_exists:
-                    st.error("⚠️ Error: 'story_points' table does not exist in the database.")
-                else:
-                    # Verify that all employee IDs exist in the Employees table
-                    existing_employees = pd.read_sql("SELECT employee_id FROM employees;", con=engine)
-                    missing_employees = set(new_data["employee_id"]) - set(existing_employees["employee_id"])
-
-                    if missing_employees:
-                        st.error(f"⚠️ Error: The following employee IDs do not exist: {missing_employees}")
-                    else:
-                        # Get existing story points using employee_id and task as unique identifiers
-                        existing_story_points = pd.read_sql("SELECT employee_id, task FROM story_points;", con=engine)
-
-                        # Merge to filter out duplicates based on employee_id and task
-                        new_story_points = new_data.merge(
-                            existing_story_points, on=["employee_id", "task"], how="left", indicator=True
-                        )
-                        new_story_points = new_story_points[new_story_points["_merge"] == "left_only"].drop(
-                            columns=["_merge"]
-                        )
-
-                        if not new_story_points.empty:
-                            new_story_points.to_sql(
-                                "story_points", con=engine, if_exists="append", index=False, method="multi"
-                            )
-                            session.commit()
-                            st.success("✅ Story Points data imported successfully!")
-                        else:
-                            st.warning("⚠️ Story points data already exist.")
-            except Exception as e:
-                session.rollback()
-                st.error(f"❌ Error importing Story Points data: {e}")
-
-    # -------------------------------------------
-    # 3️⃣ Employees Table Import - lowest priority
-    #    Check for fname and lname columns.
-    # -------------------------------------------
-    elif all(col in new_data.columns for col in ["fname", "lname"]):
-        if st.button("Import Employees to Database"):
-            try:
-                # Check if Employees table exists
-                check_table_query = (
-                    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name='employees');"
-                )
-                table_exists = session.execute(text(check_table_query)).scalar()
-
-                if not table_exists:
-                    st.error("⚠️ Error: 'employees' table does not exist in the database.")
-                else:
-                    # Get existing employees
-                    existing_employees = pd.read_sql("SELECT fname, lname FROM employees;", con=engine)
-
-                    # Merge and filter out duplicates
-                    new_employees = new_data.merge(
-                        existing_employees, on=["fname", "lname"], how="left", indicator=True
-                    )
-                    new_employees = new_employees[new_employees["_merge"] == "left_only"].drop(
-                        columns=["_merge"]
-                    )
-
-                    if not new_employees.empty:
-                        new_employees[["fname", "lname"]].to_sql(
-                            "employees", con=engine, if_exists="append", index=False, method="multi"
-                        )
-                        session.commit()
-                        st.success("✅ Employee data imported successfully!")
-                    else:
-                        st.warning("⚠️ Employees already exist.")
-            except Exception as e:
-                session.rollback()
-                st.error(f"❌ Error importing employee data: {e}")
-
-    else:
-        st.error("⚠️ Invalid CSV format! Ensure it contains Employees, Attendance, or Story Points data.")
-
-# Close the session properly
-session.close()
+        conn.commit()
+        st.success("Data successfully imported into the database!")

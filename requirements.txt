@@ -8,3 +8,8 @@ plost
 seaborn
 matplotlib
 psycopg2
+celery
+redis
+tabulate
+requests
+sqlalchemy-trino

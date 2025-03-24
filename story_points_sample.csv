@@ -1,0 +1,10 @@
+issue_id,emp_id,task,state,priority,start_date,due_date,estimate,labels,task_ended,relates_to,sub_issue,blocked_by,module,cycle
+MW-13,1,Use Case,closed,high,2025-02-19,2025-02-20,13,"{Requirement Analysis}",2025-02-28,,,
+MW-13,2,Use Case,closed,high,2025-02-19,2025-02-20,13,"{Requirement Analysis}",2025-02-28,,,
+MW-13,3,Use Case,closed,high,2025-02-19,2025-02-20,13,"{Requirement Analysis}",2025-02-28,,,
+MW-14,2,UML Diagram,closed,medium,2025-02-17,2025-02-18,13,"{Requirement Analysis}",2025-02-21,,,
+MW-14,3,UML Diagram,closed,medium,2025-02-17,2025-02-18,13,"{BackEnd}",2025-02-21,,,
+MW-23,1,Org CRUDS flow,closed,medium,2025-02-17,2025-02-18,8,"{Requirement Analysis}",2025-02-21,"{MW-12}",,,"Admin",Sprint 1
+MW-28,1,Timetracking and Reports Flow,closed,medium,2025-02-20,2025-02-20,3,"{Requirement Analysis}",2025-02-20,"{MW-12}",,,"Admin",Sprint 1
+MW-25,2,Web Authentication API,aut,urgent,2025-02-24,2025-02-28,13,"{Web}",2025-03-07,,"{MW-38}",,"Authentication",Sprint 1
+MW-25,3,Web Authentication API,aut,urgent,2025-02-24,2025-02-28,13,"{BackEnd}",2025-03-07,,"{MW-38}",,"Authentication",Sprint 1
