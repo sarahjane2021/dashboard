@@ -1,10 +1,11 @@
 from celery import Celery
 import pandas as pd
-from sqlalchemy import create_engine, MetaData, select, inspect, text
+from sqlalchemy import create_engine, MetaData, select, inspect, text, Table
 from sqlalchemy.dialects.postgresql import insert
 from celery.schedules import crontab
 import redis, logging, os, re
-import json
+from sqlalchemy.dialects.postgresql import insert  # for upsert logic
+
 
 # ----- Setup Logging -----
 LOG_FILE = "celery.log"
@@ -141,45 +142,59 @@ def ingest_data():
     
 ###########################################
 # ----- Preprocessing Functions -----
+from sqlalchemy import MetaData, Table
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.types import Time
+import pandas as pd
+
 def preprocess_leave():
     logger.info("🔹Preprocessing leave table")
+
     silver = "silver_leave"
     pk = "leave_id"
-    if table_exists(target_engine, silver):
-        last = get_last_processed_key(silver, pk)
-        query = f"SELECT * FROM leave WHERE {pk} > {last}" if last is not None else "SELECT * FROM leave"
-        option = 'append'
-    else:
-        query, option = "SELECT * FROM leave", 'replace'
-    
-    df = pd.read_sql_query(query, target_engine)
+
+    # Step 1: Load source data
+    df = pd.read_sql_query("SELECT * FROM leave", target_engine)
     if df.empty:
         logger.info("No new leave records to process.")
         return "No new leave records to process."
-    
-    # Parse timestamps
+
+    # Step 2: Parse and split datetime columns
     df['duration_start'] = pd.to_datetime(df['duration_start'])
     df['duration_end'] = pd.to_datetime(df['duration_end'])
-    
-    # Extract date and time components for start
+
     df['duration_start_date'] = df['duration_start'].dt.date
     df['duration_start_time'] = df['duration_start'].dt.time
-    
-    # Extract date component for end
     df['duration_end_date'] = df['duration_end'].dt.date
-    # Create a 12-hour formatted time string, then convert to a time object
-    duration_end_str = df['duration_end'].dt.strftime('%I:%M %p')
-    df['duration_end_time'] = pd.to_datetime(duration_end_str, format='%I:%M %p').dt.time
-    
-    # Drop the original timestamp columns
+    df['duration_end_time'] = df['duration_end'].dt.time
+
     df_clean = df.drop(columns=['duration_start', 'duration_end'])
-    
-    # Write the DataFrame and force duration_end_time to be of SQL TIME type
-    df_clean.to_sql(silver, target_engine, index=False, if_exists=option,
-                    dtype={'duration_end_time': Time()})
-    
-    logger.info("Silver leave table updated.")
-    return "Silver leave table updated."
+
+    # Step 3: Reflect or create the silver table
+    metadata = MetaData()
+    metadata.reflect(bind=target_engine)
+    if silver not in metadata.tables:
+        logger.info("Silver table does not exist. Creating it.")
+        df_clean.to_sql(silver, target_engine, index=False, if_exists='replace',
+                        dtype={'duration_end_time': Time(), 'duration_start_time': Time()})
+        return "Silver leave table created."
+
+    silver_table = metadata.tables[silver]
+
+    # Step 4: Perform upsert for each row
+    with target_engine.begin() as conn:
+        for _, row in df_clean.iterrows():
+            row_dict = row.to_dict()
+
+            insert_stmt = insert(silver_table).values(**row_dict)
+            update_stmt = insert_stmt.on_conflict_do_update(
+                index_elements=[pk],
+                set_={col: insert_stmt.excluded[col] for col in row_dict if col != pk}
+            )
+            conn.execute(update_stmt)
+
+    logger.info("Silver leave table upserted (inserted or updated).")
+    return "Silver leave table upserted (inserted or updated)."
 
 def preprocess_employee():
     logger.info("🔹Preprocessing employee table")
