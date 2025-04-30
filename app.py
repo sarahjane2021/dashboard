@@ -4,16 +4,16 @@ import streamlit as st
 import plotly.express as px
 import joblib
 import numpy as np
+import os
 
-# Function to establish connection with Trino
+#---------- connection with Trino------
 def get_trino_connection():
     return trino.dbapi.connect(
-        host="localhost",
+        host="host.docker.internal",
         port=8080,
         user="admin",
-        catalog="postgresql",  # Trino catalog
-        schema="public"        # Change schema if needed
-    )
+        catalog="postgresql",  
+        schema="public"       )
 
 # Fetch Data Function
 def fetch_data(query):
@@ -28,13 +28,12 @@ def fetch_data(query):
         st.error(f"Error fetching data: {e}")
         return pd.DataFrame()
 
-
-# Sidebar for filters
+# --------------------------------------------
 st.sidebar.header("Filters")
 
-# Fetch initial data for both views
+# Fetch data 
 df_leaderboard = fetch_data("SELECT * FROM postgresql.public.task_leaderboard")
-df_burnout = fetch_data("SELECT * FROM postgresql.public.employee_burnout_view")
+df_burnout = fetch_data("SELECT * FROM postgresql.public.burnout_view")
 
 # Filter options for both views
 sprint_filter = st.sidebar.selectbox("Select Sprint", df_leaderboard["cycle"].unique())
@@ -65,7 +64,7 @@ if not filtered_leaderboard_df.empty:
         "late_tasks": "Late"
     })
 
-    # Create the stacked bar chart
+    #stacked bar chart
     fig = px.bar(
         melted_df,
         x="task_count",
@@ -80,65 +79,79 @@ if not filtered_leaderboard_df.empty:
         barmode="stack",
         yaxis=dict(autorange="reversed"),
         xaxis_title="Total Tasks",
-        yaxis_title=""
+        yaxis_title="",
+        legend=dict(
+            orientation="h", 
+            yanchor="bottom",
+            y=-0.3, 
+            xanchor="center",
+            x=0.5,
+            title_text="" 
+        )
     )
-    # Add annotations for each employee's rank
-    rank_labels = {1: "🏅 Top 1", 2: "🥈 Top 2", 3: "🥉 Top 3"}  # Customize labels if needed
+    # annotations for each employee's rank with adjusted positioning
+    rank_labels = {1: "🏅 Top 1", 2: "🥈 Top 2", 3: "🥉 Top 3"}
     for _, row in filtered_leaderboard_df.iterrows():
         fig.add_annotation(
-            x=row["total_tasks"] + 0.5,  # Offset the position slightly to the right of the bar
+            x=row["total_tasks"] + max(1, row["total_tasks"] * 0.10),  
             y=row["employee_name"],
             text=rank_labels.get(row["rank"], f"🔹 Top {row['rank']}"),
             showarrow=False,
-            font=dict(size=15),
-            align="left"
+            font=dict(size=14), 
+            align="left",
+            xanchor="left", 
         )
 
     st.plotly_chart(fig, use_container_width=True)
 
 # ------------------------ Visualization 2: Burnout Risk ------------------------
-# 🎯 Load the trained model for Burnout Prediction
-MODEL_PATH = r"C:\Users\Sarah\Desktop\try1\model\random_forest_model.pkl"
-model = joblib.load(MODEL_PATH)
 
-# 🧠 Predict burnout risk
+# trained model for Burnout Prediction
+MODEL_PATH  = os.path.join('model', 'rf_regression_model.pkl')
+SCALER_PATH = os.path.join('model', 'scaler.pkl')
+
+model = joblib.load(MODEL_PATH)
+scaler = joblib.load(SCALER_PATH)
+
+# Predict burnout risk
 def predict_burnout(df):
     if df.empty:
         return df
 
     try:
-        feature_columns = [
-            "days", "total_tasks", "assigned_tasks", "completed_tasks", "task_backlog",
-            "task_completion_rate_assigned", "task_completion_rate_total",
-            "completion_time_days", "avg_task_completion_time", "minimum_working_hours",
-            "overtime_frequency", "total_work_hours", "num_high_priority_tasks",
-            "num_leaves_taken", "total_leave_days", "total_leave_credits"
-        ]
-        
-        features = df[feature_columns]
+        columns_to_exclude = [
+            'month', 'cycle', 'task_start_date',
+            'task_ended', 'task_due_date']
+        df_model = df.drop(columns=columns_to_exclude, errors='ignore')
 
-        df["burnout_risk"] = model.predict_proba(features)[:, 1] * 100  # Convert to percentage
-        
-        df["status"] = df["burnout_risk"].apply(
-            lambda x: "🔴 High Risk" if x > 80 else ("🟠 Moderate Risk" if x > 65 else "🟢 Low Risk")
-        )
+        FEATURE_COLUMNS = [
+            'days', 'assigned_tasks', 'completed_tasks', 'task_backlog',
+            'task_completion_rate_total', 'minimum_working_hours',
+            'overtime_frequency', 'overtime_hours', 'total_work_hours',
+            'avg_working_hours', 'num_high_priority_tasks',
+            'num_leaves_taken', 'total_leave_days', 'total_leave_credits'
+        ]
+        df_model = df_model[FEATURE_COLUMNS]
+        scaled_features = scaler.transform(df_model)
+        predictions = model.predict(scaled_features)
+        df['Predicted Burnout Risk (%)'] = predictions.round().astype(int).clip(0, 100)
 
         df["employee_name"] = df["first_name"] + " " + df["last_name"]
 
-        # Convert float columns to integers 
+        # ---- Data Cleaning & Formatting -----
         int_columns = [
-            "total_tasks", "assigned_tasks", "completed_tasks", "task_backlog",
-            "task_completion_rate_assigned", "task_completion_rate_total",
-            "completion_time_days", "avg_task_completion_time",
-            "total_work_hours", "overtime_frequency",
+            "days", "assigned_tasks", "completed_tasks", "task_backlog",
+            "task_completion_rate_total", "completion_time_days", "minimum_working_hours",
+            "overtime_frequency", "overtime_hours", "total_work_hours", "avg_working_hours",
             "num_high_priority_tasks", "num_leaves_taken", "total_leave_days", "total_leave_credits"
         ]
-
-        # Handle NaN & Inf before converting
         df[int_columns] = df[int_columns].replace([np.inf, -np.inf], 0).fillna(0).astype(int)
-        # 🔹 Format completion rate as percentages (e.g., "85%")
-        df["task_completion_rate_assigned"] = df["task_completion_rate_assigned"].replace([np.inf, -np.inf], 0).fillna(0).astype(int).astype(str) + "%"
-        df["task_completion_rate_total"] = df["task_completion_rate_total"].replace([np.inf, -np.inf], 0).fillna(0).astype(int).astype(str) + "%"
+
+        df["task_completion_rate_total"] = df["task_completion_rate_total"].astype(str) + "%"
+        df["days"] = df["days"].astype(str) + " days"
+        df["completion_time_days"] = df["completion_time_days"].astype(str) + " days"
+        df["total_work_hours"] = df["total_work_hours"].astype(str) + " hours"
+        df["overtime_hours"] = df["overtime_hours"].astype(str) + " hours"
 
         return df
     except Exception as e:
@@ -146,36 +159,46 @@ def predict_burnout(df):
         return df
 
 if not filtered_burnout_df.empty:
-    st.markdown("#### 🔍 Employee Burnout Risk Table")
+    st.markdown("###### 🔍 Employee Burnout Risk Table")
     predictions = predict_burnout(filtered_burnout_df)
 
     display_df = predictions.rename(columns={
-        "employee_name": "Employee Name",
-        "total_tasks": "Total Tasks",
-        "completed_tasks": "Completed Tasks",
-        "task_backlog": "Task Backlog",
-        "task_completion_rate_assigned": "Task Completion Rate (Assigned) %",
-        "task_completion_rate_total": "Task Completion Rate (Total) %",
-        "total_work_hours": "Total Work Hours",
-        "overtime_frequency": "Overtime Frequency",
-        "num_high_priority_tasks": "High-Priority Tasks",
-        "num_leaves_taken": "Leaves Taken",
-        "total_leave_days": "Total Leave Days",
-        "total_leave_credits": "Total Leave Credits",
-        "burnout_risk": "Burnout Risk (%)",
-        "status": "Burnout Status"
+        'cycle': 'Cycle',
+        'days': 'Sprint Duration',
+        'assigned_tasks': 'Assigned Tasks',
+        'completed_tasks': 'Completed Tasks',
+        'task_backlog': 'Task Backlog',
+        'task_completion_rate_total': 'Task Completion Rate',
+        'minimum_working_hours': 'Min Working Hours',
+        'overtime_frequency': 'Overtime Frequency',
+        'overtime_hours': 'Overtime Hours',
+        'total_work_hours': 'Total Work Hours',
+        'avg_working_hours': 'Avg Working Hours',
+        'num_high_priority_tasks': 'High Priority Tasks',
+        'num_leaves_taken': 'Leaves Taken',
+        'Predicted Burnout Risk (%)': 'Burnout Risk (%)',
+        'employee_name': 'Employee Name',
+        'task_start_date': 'Start Date',
+        'task_ended': 'End Date',
+        'Predicted Burnout Risk (%)': 'Burnout Risk (%)',
+        'task_due_date': 'Due Date'
     })
+    # 🔹 Format datetime columns to 'e.g. Mar 21, 2025'
+    date_columns = ['Start Date', 'Due Date', 'End Date']  # or whatever your date fields are
+    for col in date_columns:
+        display_df[col] = pd.to_datetime(display_df[col], errors='coerce')
+        display_df[col] = display_df[col].dt.strftime('%b %d, %Y')
+
+    # Set 'Employee Name' as the index
+    display_df = display_df.set_index("Employee Name")
 
     # Display the table with color coding for burnout risk
     st.dataframe(
         display_df[[
-            "Employee Name", "Total Tasks", "Completed Tasks", "Task Backlog",
-            "Task Completion Rate (Assigned) %", "Task Completion Rate (Total) %",
-            "Total Work Hours", "Overtime Frequency", "High-Priority Tasks", "Leaves Taken",
-            "Total Leave Days", "Total Leave Credits", "Burnout Risk (%)", "Burnout Status"
+            'Cycle', 'Start Date', 'End Date', 'Due Date',
+            'Assigned Tasks', 'Completed Tasks', 'Task Backlog','Task Completion Rate',
+            'Total Work Hours','Overtime Hours','High Priority Tasks','Leaves Taken', 'Burnout Risk (%)'
         ]].style.applymap(lambda val: "background-color: red; color: white" if val > 80
                          else ("background-color: orange; color: white" if val > 65 else "background-color: green; color: white"),
                          subset=["Burnout Risk (%)"])
     )
-else:
-    st.warning("No data available for Burnout Risk.")

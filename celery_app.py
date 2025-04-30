@@ -1,11 +1,9 @@
 from celery import Celery
 import pandas as pd
-from sqlalchemy import create_engine, MetaData, select, inspect, text, Table
+from sqlalchemy import create_engine, MetaData, select, inspect, text
 from sqlalchemy.dialects.postgresql import insert
 from celery.schedules import crontab
 import redis, logging, os, re
-from sqlalchemy.dialects.postgresql import insert  # for upsert logic
-
 
 # ----- Setup Logging -----
 LOG_FILE = "celery.log"
@@ -142,59 +140,45 @@ def ingest_data():
     
 ###########################################
 # ----- Preprocessing Functions -----
-from sqlalchemy import MetaData, Table
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.types import Time
-import pandas as pd
-
 def preprocess_leave():
     logger.info("🔹Preprocessing leave table")
-
     silver = "silver_leave"
     pk = "leave_id"
-
-    # Step 1: Load source data
-    df = pd.read_sql_query("SELECT * FROM leave", target_engine)
+    if table_exists(target_engine, silver):
+        last = get_last_processed_key(silver, pk)
+        query = f"SELECT * FROM leave WHERE {pk} > {last}" if last is not None else "SELECT * FROM leave"
+        option = 'append'
+    else:
+        query, option = "SELECT * FROM leave", 'replace'
+    
+    df = pd.read_sql_query(query, target_engine)
     if df.empty:
         logger.info("No new leave records to process.")
         return "No new leave records to process."
-
-    # Step 2: Parse and split datetime columns
+    
+    # Parse timestamps
     df['duration_start'] = pd.to_datetime(df['duration_start'])
     df['duration_end'] = pd.to_datetime(df['duration_end'])
-
+    
+    # Extract date and time components for start
     df['duration_start_date'] = df['duration_start'].dt.date
     df['duration_start_time'] = df['duration_start'].dt.time
+    
+    # Extract date component for end
     df['duration_end_date'] = df['duration_end'].dt.date
-    df['duration_end_time'] = df['duration_end'].dt.time
-
+    # Create a 12-hour formatted time string, then convert to a time object
+    duration_end_str = df['duration_end'].dt.strftime('%I:%M %p')
+    df['duration_end_time'] = pd.to_datetime(duration_end_str, format='%I:%M %p').dt.time
+    
+    # Drop the original timestamp columns
     df_clean = df.drop(columns=['duration_start', 'duration_end'])
-
-    # Step 3: Reflect or create the silver table
-    metadata = MetaData()
-    metadata.reflect(bind=target_engine)
-    if silver not in metadata.tables:
-        logger.info("Silver table does not exist. Creating it.")
-        df_clean.to_sql(silver, target_engine, index=False, if_exists='replace',
-                        dtype={'duration_end_time': Time(), 'duration_start_time': Time()})
-        return "Silver leave table created."
-
-    silver_table = metadata.tables[silver]
-
-    # Step 4: Perform upsert for each row
-    with target_engine.begin() as conn:
-        for _, row in df_clean.iterrows():
-            row_dict = row.to_dict()
-
-            insert_stmt = insert(silver_table).values(**row_dict)
-            update_stmt = insert_stmt.on_conflict_do_update(
-                index_elements=[pk],
-                set_={col: insert_stmt.excluded[col] for col in row_dict if col != pk}
-            )
-            conn.execute(update_stmt)
-
-    logger.info("Silver leave table upserted (inserted or updated).")
-    return "Silver leave table upserted (inserted or updated)."
+    
+    # Write the DataFrame and force duration_end_time to be of SQL TIME type
+    df_clean.to_sql(silver, target_engine, index=False, if_exists=option,
+                    dtype={'duration_end_time': Time()})
+    
+    logger.info("Silver leave table updated.")
+    return "Silver leave table updated."
 
 def preprocess_employee():
     logger.info("🔹Preprocessing employee table")
@@ -276,33 +260,22 @@ def preprocess_attendance():
         logger.error(f"❌ Preprocessing attendance table failed: {str(e)}")
         return str(e)
 
-
-############################################################
 ############################################################
 
 def preprocess_story_point():
-    """Extracts array values into separate columns and updates 'silver_story_point' table."""
+    """Extracts array values into separate columns and updates 'silver_story_point' table with UPSERT."""
     engine = create_engine(TARGET_DATABASE_URL)
-    
+
     with engine.connect() as conn:
         # Check if 'silver_story_point' exists
         table_exists = conn.execute(text("""
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables 
-                WHERE table_name = 'silver_story_point'
+                WHERE table_name = 'silver_story_points'
             );
         """)).scalar()
 
-        # Get record counts
-        total_records = conn.execute(text("SELECT COUNT(*) FROM story_point")).scalar()
-        existing_records = conn.execute(text("SELECT COUNT(*) FROM silver_story_point"))\
-            .scalar() if table_exists else 0
-
-        if table_exists and existing_records == total_records:
-            print("✅ No new story_point records to process.")
-            return
-
-        # Get column names
+        # Get array and non-array column names from story_point
         fetch_columns = lambda t: text(f"""
             SELECT column_name FROM information_schema.columns 
             WHERE table_name = 'story_point' AND data_type {t};
@@ -314,23 +287,66 @@ def preprocess_story_point():
             print("⚠ No array columns found in story_point.")
             return
 
-        # Extract max array lengths and generate dynamic columns
+        # Generate dynamic array expansions like relates_to_1, relates_to_2, ...
         extracted_cols = [
             f"({col}[{i}])::TEXT AS {col}_{i}"
             for col in array_cols
             for i in range(1, (conn.execute(text(f"SELECT MAX(array_length({col}, 1)) FROM story_point")).scalar() or 1) + 1)
         ]
+        select_query = f"""
+            SELECT {", ".join(non_array_cols + extracted_cols)}
+            FROM story_point
+        """
 
-        # Create or replace the expanded table
-        conn.execute(text(f"""
-            DROP TABLE IF EXISTS silver_story_point;
-            CREATE TABLE silver_story_point AS
-            SELECT {", ".join(non_array_cols)}, {", ".join(extracted_cols)}
-            FROM story_point;
-        """))
+        # Create the table if it does not exist
+        if not table_exists:
+            conn.execute(text(f"""
+                CREATE TABLE silver_story_points AS
+                {select_query};
+            """))
+            # Add unique constraint
+            conn.execute(text("""
+                ALTER TABLE silver_story_points
+                ADD CONSTRAINT silver_story_points_unique UNIQUE (issue_id, emp_id, task, start_date);
+            """))
+            print("✅ Created 'silver_story_points' table with expanded data.")
+        else:
+            # Ensure unique constraint exists
+            conn.execute(text(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.table_constraints
+                        WHERE table_name = 'silver_story_points' 
+                        AND constraint_type = 'UNIQUE'
+                        AND constraint_name = 'silver_story_points_unique'
+                    ) THEN
+                        ALTER TABLE silver_story_points
+                        ADD CONSTRAINT silver_story_points_unique UNIQUE (issue_id, emp_id, task, start_date);
+                    END IF;
+                END
+                $$;
+            """))
+
+            # Perform UPSERT
+            col_names = non_array_cols + [col.split(" AS ")[1] for col in extracted_cols]
+            update_set = ", ".join([
+                f"{col} = EXCLUDED.{col}"
+                for col in col_names
+                if col not in ['issue_id', 'emp_id', 'task', 'start_date']
+            ])
+
+            insert_query = f"""
+                INSERT INTO silver_story_points ({", ".join(col_names)})
+                {select_query}
+                ON CONFLICT (issue_id, emp_id, task, start_date)
+                DO UPDATE SET {update_set};
+            """
+
+            conn.execute(text(insert_query))
+            print("✅ UPSERTED records into 'silver_story_points' table.")
+
         conn.commit()
-
-        print(f"✅ {total_records - existing_records} new records added to story_point_expanded.")
 
 #############################################################
 # ----- Master Task: Preprocess All Tables -----
@@ -372,4 +388,13 @@ docker desktop start
 1. celery -A celery_app beat --loglevel=info
 2. celery -A celery_app worker --loglevel=info --pool=solo
 3. streamlit run app.py
+//REDIS
+1. docker exec -it redis_container redis-cli ping 
+(if not running) docker start redis_container
+2. docker run -d --name redis_container -p 6379:6379 redis
+// TRINO
+docker restart trino_container
+1. docker exec -it trino_container /bin/bash
+2. trino
+    3. SELECT * FROM employee_burnout_view LIMIT 10;
 """
