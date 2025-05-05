@@ -10,10 +10,8 @@ def get_trino_connection():
         schema="public"
     )
 
-st.set_page_config(layout='wide', page_title="Data manager", page_icon=":material/edit:")
+st.set_page_config(layout='wide', page_title="Data Analytics", page_icon=":material/edit:")
 
-
-st.sidebar.markdown("---")
 # Navigation
 main_page = st.Page("app.py", title="Main", icon=":material/dashboard:")
 attendance_page = st.Page("Attendance.py", title="Attendance", icon=":material/history:")

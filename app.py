@@ -39,7 +39,7 @@ df_burnout = fetch_data("SELECT * FROM postgresql.public.burnout_view")
 sprint_filter = st.sidebar.selectbox("Select Sprint", df_leaderboard["cycle"].unique())
 month_filter = st.sidebar.selectbox("Select Month", pd.to_datetime(df_leaderboard["sprint_month"]).dt.strftime("%B %Y").unique())
 
-# Apply filter to both views
+# filter to both views
 filtered_leaderboard_df = df_leaderboard[(df_leaderboard["cycle"] == sprint_filter) & 
                                           (pd.to_datetime(df_leaderboard["sprint_month"]).dt.strftime("%B %Y") == month_filter)]
 

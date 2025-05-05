@@ -34,8 +34,6 @@ def fetch_data(query):
         st.error(f"Error fetching data: {e}")
         return pd.DataFrame()
 ############################################################
-
-############################################################
 df = fetch_data("SELECT * FROM postgresql.public.attendance_view")
 df_org = fetch_data("SELECT * FROM postgresql.public.silver_organization")
 ############################################################

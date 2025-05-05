@@ -394,7 +394,12 @@ docker desktop start
 2. docker run -d --name redis_container -p 6379:6379 redis
 // TRINO
 docker restart trino_container
+connect to postgres
+1. docker run -d --name trino_container -p 8080:8080 -v C:/Users/Sarah/Desktop/try1/trino-config:/etc/trino trinodb/trino:latest
+2. docker exec -it trino_container ls /etc/trino/catalog OUTPUT: postgresql.properties
+3. docker restart trino_container
+ENSURE TRINOCONTAINER IS RUNNING
 1. docker exec -it trino_container /bin/bash
 2. trino
-    3. SELECT * FROM employee_burnout_view LIMIT 10;
+    3. SELECT * FROM postgresql.public.burnout_view LIMIT 10;
 """
