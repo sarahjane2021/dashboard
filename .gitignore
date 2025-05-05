@@ -1,0 +1,25 @@
+# Ignore virtual environments
+.venv/
+venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# VS Code settings
+.vscode/
+
+# Streamlit and Celery cache/log files
+celery.log
+celerybeat-schedule.*
+
+# Jupyter notebook checkpoints
+**/.ipynb_checkpoints
+
+# Environment files
+.env
+
+# Docker
+*.pid
+
