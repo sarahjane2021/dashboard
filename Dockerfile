@@ -20,4 +20,4 @@ CMD ["streamlit", "run", "main.py", "--server.port=8501", "--server.address=0.0.
 # Run the Docker container #
 # docker run -p 8501:8501 my-streamlit-app
 
-
+#docker compose up --build

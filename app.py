@@ -32,77 +32,72 @@ def fetch_data(query):
 st.sidebar.header("Filters")
 
 # Fetch data 
-df_leaderboard = fetch_data("SELECT * FROM postgresql.public.task_leaderboard")
+df_leaderboard = fetch_data("SELECT * FROM postgresql.public.task_leaderboard_view")
 df_burnout = fetch_data("SELECT * FROM postgresql.public.burnout_view")
 
 # Filter options for both views
 sprint_filter = st.sidebar.selectbox("Select Sprint", df_leaderboard["cycle"].unique())
-month_filter = st.sidebar.selectbox("Select Month", pd.to_datetime(df_leaderboard["sprint_month"]).dt.strftime("%B %Y").unique())
 
 # filter to both views
-filtered_leaderboard_df = df_leaderboard[(df_leaderboard["cycle"] == sprint_filter) & 
-                                          (pd.to_datetime(df_leaderboard["sprint_month"]).dt.strftime("%B %Y") == month_filter)]
+filtered_leaderboard_df = df_leaderboard[df_leaderboard["cycle"] == sprint_filter]
 
-filtered_burnout_df = df_burnout[(df_burnout["cycle"] == sprint_filter) & 
-                                  (pd.to_datetime(df_burnout["month"]).dt.strftime("%B %Y") == month_filter)]
+filtered_burnout_df = df_burnout[df_burnout["cycle"] == sprint_filter]
 
 # ------------------------ Visualization 1: Leaderboard -------------------------
 if not filtered_leaderboard_df.empty:
+    # Add full name
+    filtered_leaderboard_df["employee_name"] = (
+        filtered_leaderboard_df["first_name"] + " " + filtered_leaderboard_df["last_name"]
+    )
 
-    filtered_leaderboard_df["employee_name"] = filtered_leaderboard_df["first_name"] + " " + filtered_leaderboard_df["last_name"]
-    filtered_leaderboard_df["late_tasks"] = filtered_leaderboard_df["total_tasks"] - filtered_leaderboard_df["on_time_tasks"]
-    
-    melted_df = pd.melt(
-        filtered_leaderboard_df,
-        id_vars=["employee_name", "rank", "total_overdue_days", "total_priority_points"],
-        value_vars=["on_time_tasks", "late_tasks"],
-        var_name="task_status",
-        value_name="task_count"
-    )
-    melted_df["task_status"] = melted_df["task_status"].map({
-        "on_time_tasks": "On Time",
-        "late_tasks": "Late"
-    })
+    # Filter Top 3 only (includes all ties with ranks 1, 2, 3)
+    top3_df = filtered_leaderboard_df[filtered_leaderboard_df["rank"] <= 3].copy()
 
-    #stacked bar chart
-    fig = px.bar(
-        melted_df,
-        x="task_count",
-        y="employee_name",
-        color="task_status",
-        orientation="h",
-        title="🏆 Sprint Leaderboard",
-        labels={"task_count": "Number of Tasks", "employee_name": "Employee", "task_status": "Status"},
-        hover_data={"total_overdue_days": True, "total_priority_points": True}
-    )
-    fig.update_layout(
-        barmode="stack",
-        yaxis=dict(autorange="reversed"),
-        xaxis_title="Total Tasks",
-        yaxis_title="",
-        legend=dict(
-            orientation="h", 
-            yanchor="bottom",
-            y=-0.3, 
-            xanchor="center",
-            x=0.5,
-            title_text="" 
-        )
-    )
-    # annotations for each employee's rank with adjusted positioning
-    rank_labels = {1: "🏅 Top 1", 2: "🥈 Top 2", 3: "🥉 Top 3"}
-    for _, row in filtered_leaderboard_df.iterrows():
-        fig.add_annotation(
-            x=row["total_tasks"] + max(1, row["total_tasks"] * 0.10),  
-            y=row["employee_name"],
-            text=rank_labels.get(row["rank"], f"🔹 Top {row['rank']}"),
-            showarrow=False,
-            font=dict(size=14), 
-            align="left",
-            xanchor="left", 
+    if not top3_df.empty:
+        # Assign emoji label for each rank, even if multiple employees share the same rank
+        def get_rank_label(row):
+            if row["rank"] == 1:
+                return f"🥇 {row['employee_name']}"
+            elif row["rank"] == 2:
+                return f"🥈 {row['employee_name']}"
+            elif row["rank"] == 3:
+                return f"🥉 {row['employee_name']}"
+            else:
+                return row["employee_name"]
+
+        top3_df["rank_label"] = top3_df.apply(get_rank_label, axis=1)
+
+        # Assign color based on emoji
+        color_map = {}
+        for label in top3_df["rank_label"]:
+            if "🥇" in label:
+                color_map[label] = "gold"
+            elif "🥈" in label:
+                color_map[label] = "silver"
+            elif "🥉" in label:
+                color_map[label] = "peru"
+
+        # Create bar chart
+        fig = px.bar(
+            top3_df,
+            x="employee_name",
+            y="total_estimate_points",
+            text="completed_estimate_points",
+            color="rank_label",
+            color_discrete_map=color_map,
+            title="Sprint Leaderboard"
         )
 
-    st.plotly_chart(fig, use_container_width=True)
+        fig.update_traces(textposition="outside")
+        fig.update_layout(
+            xaxis_title="Employee",
+            yaxis_title="Total Estimate Points",
+            yaxis=dict(tick0=0),
+            showlegend=False,
+            bargap=0.4  
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
 
 # ------------------------ Visualization 2: Burnout Risk ------------------------
 
@@ -113,7 +108,7 @@ SCALER_PATH = os.path.join('model', 'scaler.pkl')
 model = joblib.load(MODEL_PATH)
 scaler = joblib.load(SCALER_PATH)
 
-# Predict burnout risk
+# Predict burnout risk function
 def predict_burnout(df):
     if df.empty:
         return df
@@ -121,7 +116,8 @@ def predict_burnout(df):
     try:
         columns_to_exclude = [
             'month', 'cycle', 'task_start_date',
-            'task_ended', 'task_due_date']
+            'task_ended', 'task_due_date'
+        ]
         df_model = df.drop(columns=columns_to_exclude, errors='ignore')
 
         FEATURE_COLUMNS = [
@@ -134,11 +130,10 @@ def predict_burnout(df):
         df_model = df_model[FEATURE_COLUMNS]
         scaled_features = scaler.transform(df_model)
         predictions = model.predict(scaled_features)
-        df['Predicted Burnout Risk (%)'] = predictions.round().astype(int).clip(0, 100)
+        df['Burnout Risk (%)'] = predictions.round().astype(int).clip(0, 100)
 
-        df["employee_name"] = df["first_name"] + " " + df["last_name"]
+        df["Employee Name"] = df["first_name"] + " " + df["last_name"]
 
-        # ---- Data Cleaning & Formatting -----
         int_columns = [
             "days", "assigned_tasks", "completed_tasks", "task_backlog",
             "task_completion_rate_total", "completion_time_days", "minimum_working_hours",
@@ -158,13 +153,34 @@ def predict_burnout(df):
         st.error(f"Prediction Error: {e}")
         return df
 
+# Apply prediction and visualize if data exists
 if not filtered_burnout_df.empty:
-    st.markdown("###### 🔍 Employee Burnout Risk Table")
     predictions = predict_burnout(filtered_burnout_df)
 
+    # Burnout Risk Bar Chart (First)
+    burnout_bar_df = predictions.sort_values(by='Burnout Risk (%)', ascending=False)
+
+    fig = px.bar(
+        burnout_bar_df,
+        y='Employee Name',
+        x='Burnout Risk (%)',
+        text='Burnout Risk (%)',
+        title='Employee Burnout Risk (%)',
+        labels={'Employee Name': 'Employee', 'Burnout Risk (%)': 'Burnout Risk (%)'},
+        color='Burnout Risk (%)',
+        color_continuous_scale='reds',
+        range_color=[0, 100]
+    )
+
+    fig.update_layout(
+        xaxis=dict(range=[0, 100]),
+        yaxis=dict(autorange="reversed")  # Most burnout on top
+    )
+    fig.update_traces(textposition='inside', texttemplate='%{text}%')
+    st.plotly_chart(fig, use_container_width=True)
+
+#-------------------- Dataframe Display --------------------
     display_df = predictions.rename(columns={
-        'cycle': 'Cycle',
-        'days': 'Sprint Duration',
         'assigned_tasks': 'Assigned Tasks',
         'completed_tasks': 'Completed Tasks',
         'task_backlog': 'Task Backlog',
@@ -176,29 +192,25 @@ if not filtered_burnout_df.empty:
         'avg_working_hours': 'Avg Working Hours',
         'num_high_priority_tasks': 'High Priority Tasks',
         'num_leaves_taken': 'Leaves Taken',
-        'Predicted Burnout Risk (%)': 'Burnout Risk (%)',
-        'employee_name': 'Employee Name',
+        'task_due_date': 'Due Date',
         'task_start_date': 'Start Date',
-        'task_ended': 'End Date',
-        'Predicted Burnout Risk (%)': 'Burnout Risk (%)',
-        'task_due_date': 'Due Date'
+        'task_ended': 'End Date'
     })
-    # 🔹 Format datetime columns to 'e.g. Mar 21, 2025'
-    date_columns = ['Start Date', 'Due Date', 'End Date']  # or whatever your date fields are
-    for col in date_columns:
-        display_df[col] = pd.to_datetime(display_df[col], errors='coerce')
-        display_df[col] = display_df[col].dt.strftime('%b %d, %Y')
 
-    # Set 'Employee Name' as the index
+    # Format date columns
+    for col in ['Start Date', 'Due Date', 'End Date']:
+        if col in display_df.columns:
+            display_df[col] = pd.to_datetime(display_df[col], errors='coerce').dt.strftime('%b %d, %Y')
+
+    # Set Employee Name as index
     display_df = display_df.set_index("Employee Name")
 
-    # Display the table with color coding for burnout risk
+    # Styled Table with Burnout Risk Color Coding
+    st.markdown("###### Employee Burnout Risk Table")
     st.dataframe(
         display_df[[
-            'Cycle', 'Start Date', 'End Date', 'Due Date',
-            'Assigned Tasks', 'Completed Tasks', 'Task Backlog','Task Completion Rate',
-            'Total Work Hours','Overtime Hours','High Priority Tasks','Leaves Taken', 'Burnout Risk (%)'
-        ]].style.applymap(lambda val: "background-color: red; color: white" if val > 80
-                         else ("background-color: orange; color: white" if val > 65 else "background-color: green; color: white"),
-                         subset=["Burnout Risk (%)"])
+            'Assigned Tasks', 'Completed Tasks', 'Task Backlog', 'Task Completion Rate',
+            'Total Work Hours', 'Overtime Hours', 'High Priority Tasks', 'Leaves Taken',
+            'Burnout Risk (%)'
+        ]]
     )

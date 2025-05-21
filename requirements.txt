@@ -7,3 +7,4 @@ joblib
 numpy
 matplotlib
 sqlalchemy
+psycopg2

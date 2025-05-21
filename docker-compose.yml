@@ -1,7 +1,7 @@
 version: '3'
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:13
     container_name: postgres_container
     restart: always
     environment:
@@ -23,6 +23,21 @@ services:
       - postgres
     volumes:
       - ./trino-config:/etc/trino
+
+  streamlit:
+      build:
+        context: .
+        dockerfile: Dockerfile
+      container_name: streamlit_app
+      restart: always
+      ports:
+        - "8501:8501"
+      depends_on:
+        - postgres
+        - trino
+      volumes:
+        - .:/app
+
 
 volumes:
   postgres_data:

@@ -2,6 +2,7 @@ import trino
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import ast
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 from sqlalchemy import create_engine, text
@@ -33,156 +34,10 @@ def fetch_data(query):
         return pd.DataFrame()
 
 ############################################################
-df = fetch_data("SELECT * FROM postgresql.public.task_insights_view")
-
-# Convert dates
-df["task_ended"] = pd.to_datetime(df["task_ended"])
-df["due_date"] = pd.to_datetime(df["due_date"])
-
-# Add month & year
-df["month"] = df["task_ended"].dt.strftime('%B')
-df["year"] = df["task_ended"].dt.year
-
-# Get latest record info
-latest_date = df["task_ended"].max()
-latest_month = latest_date.strftime('%B')
-latest_year = latest_date.year
-latest_sprint = df[df["task_ended"] == latest_date]["cycle"].iloc[0] if not df[df["task_ended"] == latest_date].empty else None
-
-# ---------------- Sidebar Filters ----------------
-st.sidebar.markdown("#### Filter Tasks")
-
-all_sprints = df["cycle"].dropna().unique()
-all_months = df["month"].dropna().unique()
-
-selected_sprints = st.sidebar.multiselect(
-    "Select Sprint(s)", 
-    options=sorted(all_sprints),
-    default=[latest_sprint] if latest_sprint else [])
-
-selected_months = st.sidebar.multiselect(
-    "Select Month(s)", 
-    options=sorted(all_months),
-    default=[latest_month])
-
-# Filter
-filtered_df = df[
-    df["cycle"].isin(selected_sprints) &
-    df["month"].isin(selected_months)]
-
-if filtered_df.empty:
-    st.warning("⚠️ No data found for the selected Sprint and Month.")
-    st.stop()
-# ---------------- Charts ----------------
-# Delayed task analysis
-col1, col2 = st.columns(2)
-with col1:
-    delayed_df = filtered_df[
-        filtered_df["overdue_status"].isin(["Late", "Overdue", "Severely Overdue"])
-    ].groupby(["label", "overdue_status"]).size().reset_index(name="count")
-
-    fig1 = px.bar(
-        delayed_df,
-        x="label",
-        y="count",
-        color="overdue_status",
-        color_discrete_map={"Late": "pink", "Overdue": "orange", "Severely Overdue": "red"},
-        title="Missed Deadlines & Delays Severity (Grouped by Team)",
-        labels={"label": "Team", "count": "Number of Delayed Tasks"},
-        template="plotly_white",
-        barmode="group")
-    st.plotly_chart(fig1, use_container_width=True)
-
-# ------------------------------------
-with col2:
-    delay_counts = filtered_df.groupby(["label", "overdue_status"]).size().reset_index(name="count")
-    fig2 = px.bar(
-        delay_counts,
-        x="label",
-        y="count",
-        color="overdue_status",
-        title="Breakdown of Tasks by Team",
-        labels={"count": "Number of Tasks", "label": "Team"},
-        color_discrete_map={
-            "On Time": "green", 
-            "Late": "pink", 
-            "Overdue": "orange", 
-            "Severely Overdue": "red"
-        },
-        template="plotly_white",
-        barmode="stack"
-    )
-    st.plotly_chart(fig2, use_container_width=True)
-
-# ------------------------------------   
-options = {
-    "state": "State",
-    "priority": "Priority",
-    "label": "Label",
-    "estimate": "Estimate",
-    "overdue_status": "Task Status"}
-
-#filters (cycle, overdue_days)
-filter = {
-    "None": "No Filter",
-    "cycle": "Cycle",
-    "overdue_days": "Overdue Days"}
-
-st.sidebar.markdown("#### Filter Distribution")
-group_by_col = st.sidebar.selectbox(
-    "Group by:",
-    filter.keys(),  
-    format_func=lambda x: filter[x]  )
-
-for key, value in options.items():
-    if group_by_col != "None":
-        df_count = df.groupby([key, group_by_col]).size().reset_index(name="issue_count")
-
-        unique_categories = df_count[group_by_col].unique()
-        viridis = cm.get_cmap('viridis', len(unique_categories)) 
-        color_map = {
-            category: mcolors.rgb2hex(viridis(i / len(unique_categories)))
-            for i, category in enumerate(unique_categories)}
-
-        fig = px.bar(
-            df_count,
-            x=key,
-            y="issue_count",
-            labels={"issue_count": "Issue Count", key: value},
-            template="plotly_white",
-            title=f"{value} Distribution (Grouped by: {filter[group_by_col]})",
-            color=group_by_col, 
-            color_discrete_map=color_map,  
-            barmode="stack" )
-
-    else:
-        df_count = df.groupby(key).size().reset_index(name="issue_count")
-        unique_categories = df_count[key].unique()
-        viridis = cm.get_cmap('viridis', len(unique_categories))
-        color_map = {
-            category: mcolors.rgb2hex(viridis(i / len(unique_categories)))
-            for i, category in enumerate(unique_categories)}
-
-        fig = px.bar(
-            df_count,
-            x=key,
-            y="issue_count",
-            labels={"issue_count": "Issue Count", key: value},
-            template="plotly_white",
-            title=f"{value} Distribution", 
-            color=key,  
-            color_discrete_map=color_map,  
-            barmode="stack" )
-        
-    fig.update_traces(width=0.5)
-    st.plotly_chart(fig, use_container_width=True)
-
 # ---------------- Sidebar CSV Upload ----------------
-import ast
-
 def get_sqlalchemy_engine():
     return create_engine(
-        "postgresql+psycopg2://admin:password@209.38.56.184:5432/orion"
+        "postgresql+psycopg2://admin:password@209.38.56.184:5432/postgres"
     )
 
 # Function to safely parse array-like columns
@@ -195,12 +50,11 @@ def parse_array(val):
         return [val]
 
 # ---------------- Sidebar CSV Upload ----------------
-st.sidebar.markdown("---")
 st.sidebar.markdown("#### ⬆️ Import CSV to PostgreSQL")
 
 uploaded_file = st.sidebar.file_uploader("Choose a CSV file", type="csv")
 if uploaded_file is not None:
-    table_name = st.sidebar.text_input("Target Table Name", value="story_point")
+    table_name = st.sidebar.text_input("Target Table Name", value="story_points")
 
     if st.sidebar.button("Upload to DB"):
         try:
@@ -294,3 +148,167 @@ if uploaded_file is not None:
                 st.sidebar.error("❌ Data already exists")
             else:
                 st.sidebar.error(f"❌ Error: {str(e)}")
+
+
+# ---------------- FOR VISUALIZATION ----------------
+df = fetch_data("SELECT * FROM postgresql.public.task_insights_view")
+
+# Convert dates
+df["task_ended"] = pd.to_datetime(df["task_ended"])
+df["due_date"] = pd.to_datetime(df["due_date"])
+
+# Add month & year
+df["month"] = df["task_ended"].dt.strftime('%B')
+df["year"] = df["task_ended"].dt.year
+
+# Get latest record info
+latest_date = df["task_ended"].max()
+latest_month = latest_date.strftime('%B')
+latest_year = latest_date.year
+latest_sprint = df[df["task_ended"] == latest_date]["cycle"].iloc[0] if not df[df["task_ended"] == latest_date].empty else None
+# ------------------ESTIMATE POINTS----------------
+# --- Fetch Data ---
+df_estimate = fetch_data("SELECT * FROM postgresql.public.task_estimate_view")
+
+# --- Preprocess ---
+df_estimate["total_estimate_points"] = pd.to_numeric(df_estimate["total_estimate_points"], errors="coerce")
+df_estimate["completed_estimate_points"] = pd.to_numeric(df_estimate["completed_estimate_points"], errors="coerce")
+
+df_estimate = df_estimate.dropna(subset=["label", "cycle", "total_estimate_points", "completed_estimate_points"])
+
+df_estimate = df_estimate.rename(columns={
+    "label": "Team",
+    "total_estimate_points": "EstimatePoints",
+    "completed_estimate_points": "CompletedPoints"
+})
+
+# ---------------- Sidebar Filters ----------------
+st.sidebar.markdown("#### Filter Tasks")
+
+all_sprints = df["cycle"].dropna().unique()
+all_months = df["month"].dropna().unique()
+
+selected_sprints = st.sidebar.multiselect(
+    "Select Sprint(s)", 
+    options=sorted(all_sprints),
+    default=[latest_sprint] if latest_sprint else [])
+
+# Filter
+filtered_df = df[
+    df["cycle"].isin(selected_sprints)]
+
+if filtered_df.empty:
+    st.warning("⚠️ No data found for the selected Sprint and Month.")
+    st.stop()
+
+# ---------------- Charts ----------------
+# Delayed task analysis
+col1, col2 = st.columns(2)
+with col1:
+    delayed_df = filtered_df[
+        filtered_df["overdue_status"].isin(["Late", "Overdue", "Severely Overdue"])
+    ].groupby(["label", "overdue_status"]).size().reset_index(name="count")
+
+    fig1 = px.bar(
+        delayed_df,
+        x="label",
+        y="count",
+        color="overdue_status",
+        color_discrete_map={"Late": "pink", "Overdue": "orange", "Severely Overdue": "red"},
+        title="Missed Deadlines & Delays Severity (Grouped by Team)",
+        labels={"label": "Team", "count": "Number of Delayed Tasks"},
+        template="plotly_white",
+        barmode="group")
+    st.plotly_chart(fig1, use_container_width=True)
+
+# ------------------------------------
+filtered_df = df_estimate[df_estimate["cycle"].isin(selected_sprints)]
+
+if filtered_df.empty:
+    st.warning("⚠️ No data found for the selected Sprint(s).")
+    st.stop()
+
+# --- Bar Chart ---
+with col2:
+    fig = px.bar(
+        filtered_df,
+        x="Team",
+        y=["EstimatePoints", "CompletedPoints"],
+        title="Estimate Points vs Completed Points by Team",
+        labels={"value": "Points", "variable": "Point Type"},
+        barmode="group",
+        text_auto=True,
+        template="plotly_white",
+        color_discrete_map={
+            "EstimatePoints": "#1f77b4",  # blue
+            "CompletedPoints": "#d62728"  # red
+        }
+    )
+
+    fig.update_layout(
+        xaxis_title="Team",
+        yaxis_title="Points",
+        height=400
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ---------------- Visualization dist ----------------
+# --- Category order ---
+category_orders = {
+    "state": ['backlog', 'to do', 'in progress', 'aut', 'done', 'reopened', 'closed', 'blocked'],
+    "priority": ['none', 'low', 'medium', 'high', 'urgent']
+}
+
+# --- Custom color maps ---
+state_color_map = {
+    'backlog': 'silver',
+    'to do': 'blue',
+    'in progress': 'teal',
+    'aut': 'green',
+    'done': 'yellow',
+    'reopened': 'orange',
+    'closed': 'orangered',
+    'blocked': 'red'
+}
+
+priority_color_map = {
+    'none': 'blue',
+    'low': 'green',
+    'medium': 'yellow',
+    'high': 'orange',
+    'urgent': 'red'
+}
+
+# --- STATE Distribution ---
+state_df = df.groupby("state").size().reset_index(name="issue_count")
+fig_state = px.bar(
+    state_df,
+    x="state",
+    y="issue_count",
+    labels={"issue_count": "Issue Count", "state": "State"},
+    template="plotly_white",
+    title="Task State Distribution",
+    color="state",
+    color_discrete_map=state_color_map,
+    barmode="stack",
+    category_orders={"state": category_orders["state"]}
+)
+fig_state.update_traces(width=0.5)
+st.plotly_chart(fig_state, use_container_width=True)
+
+# --- PRIORITY Distribution ---
+priority_df = df.groupby("priority").size().reset_index(name="issue_count")
+fig_priority = px.bar(
+    priority_df,
+    x="priority",
+    y="issue_count",
+    labels={"issue_count": "Issue Count", "priority": "Priority"},
+    template="plotly_white",
+    title="Task Priority Distribution",
+    color="priority",
+    color_discrete_map=priority_color_map,
+    barmode="stack",
+    category_orders={"priority": category_orders["priority"]}
+)
+fig_priority.update_traces(width=0.5)
+st.plotly_chart(fig_priority, use_container_width=True)
